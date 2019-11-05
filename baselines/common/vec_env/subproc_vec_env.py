@@ -4,9 +4,19 @@ import numpy as np
 from .vec_env import VecEnv, CloudpickleWrapper, clear_mpi_env_vars
 
 
-def worker(remote, parent_remote, env_fn_wrappers):
+def worker(remote, parent_remote, env_fn_wrappers, reset_on_error):
     def step_env(env, action):
-        ob, reward, done, info = env.step(action)
+        try:
+            ob, reward, done, info = env.step(action)
+            if reset_on_error:
+                info['terminated'] = False
+        except Exception as e:
+            if not reset_on_error:
+                raise e
+            ob = env.reset()
+            reward = 0.
+            done = False
+            info = {'terminated': True}
         if done:
             ob = env.reset()
         return ob, reward, done, info
@@ -41,7 +51,7 @@ class SubprocVecEnv(VecEnv):
     VecEnv that runs multiple environments in parallel in subproceses and communicates with them via pipes.
     Recommended to use when num_envs > 1 and step() can be a bottleneck.
     """
-    def __init__(self, env_fns, spaces=None, context='spawn', in_series=1):
+    def __init__(self, env_fns, spaces=None, context='spawn', in_series=1, reset_on_error=False):
         """
         Arguments:
 
@@ -58,7 +68,7 @@ class SubprocVecEnv(VecEnv):
         env_fns = np.array_split(env_fns, self.nremotes)
         ctx = mp.get_context(context)
         self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(self.nremotes)])
-        self.ps = [ctx.Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
+        self.ps = [ctx.Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn), reset_on_error))
                    for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
         for p in self.ps:
             p.daemon = True  # if the main process crashes, we should not cause things to hang

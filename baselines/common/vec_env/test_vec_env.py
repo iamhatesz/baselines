@@ -156,3 +156,42 @@ def test_mpi_with_subprocvecenv():
     venv.close()
     assert ob.shape == (nenv,) + shape
 
+
+class ErroneousEnv(gym.Env):
+    def __init__(self):
+        self.action_space = gym.spaces.Discrete(2)
+        self.observation_space = gym.spaces.Box(0, 1, shape=(2,))
+
+    def step(self, action):
+        if action == 1:
+            raise Exception
+        return np.ones(2), 1, False, {}
+
+    def reset(self):
+        return np.ones(2)
+
+    def render(self, mode=None):
+        raise NotImplementedError
+
+
+def test_subproc_vec_env_handle_errors_in_steps():
+    """
+    Test that a SubprocVecEnv handles errors occurred during step call.
+    """
+    num_envs = 12
+    num_steps = 100
+
+    def make_fn():
+        """
+        Get an environment constructor with a seed.
+        """
+        return lambda: ErroneousEnv()
+    fns = [make_fn() for i in range(num_envs)]
+    env = SubprocVecEnv(fns, reset_on_error=True)
+    env.reset()
+    for i in range(num_steps):
+        raise_exception = i > 0 and i % 10 == 0
+        ob, rew, done, info = env.step([int(raise_exception) for _ in range(num_envs)])
+        for e in range(num_envs):
+            assert rew[e] == (0 if raise_exception else 1)
+            assert info[e]['terminated'] == raise_exception
